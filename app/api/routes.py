@@ -8,6 +8,7 @@ from ..database import get_db
 from ..models.database_models import FoodLog
 from ..models.food import FoodEntry, FoodResponse, FoodAnalysis
 from ..services.food_analyzer import FoodAnalyzerService, parse_nutrient_string
+from ..services.image_analyzer import analyze_image  # Import your image analysis service
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -52,16 +53,40 @@ async def analyze_food(food_entry: FoodEntry, db: Session = Depends(get_db)):
         raise HTTPException(status_code=400, detail=str(e))
 
 @router.post("/track/image")
-async def track_food_image(image: UploadFile = File(...)):
+async def track_food_image(image: UploadFile = File(...), db: Session = Depends(get_db)):
     try:
         contents = await image.read()
-        food_entry = {
-            "description": "Food from image",
-            "calories": 0,
-            "timestamp": None
-        }
-        return {"message": "Image processed successfully", "entry": food_entry}
+        
+        # Analyze the image to get food information
+        # Add await here to properly handle the coroutine
+        analysis = await analyze_image(contents)
+        
+        # Create database entry
+        db_food_log = FoodLog(
+            description=analysis["description"],
+            calories=analysis["calories"],
+            macronutrients=analysis["macronutrients"],
+            micronutrients=analysis["micronutrients"],
+            created_at=datetime.utcnow()
+        )
+        
+        # Save to database
+        db.add(db_food_log)
+        db.commit()
+        db.refresh(db_food_log)
+        
+        # Create response
+        food_analysis = FoodAnalysis(
+            description=analysis["description"],
+            calories=analysis["calories"],
+            macronutrients=analysis["macronutrients"],
+            micronutrients=analysis["micronutrients"],
+            timestamp=db_food_log.created_at
+        )
+        
+        return {"message": "Image processed and food entry logged successfully", "entry": food_analysis}
     except Exception as e:
+        logger.error(f"Error processing food image: {str(e)}", exc_info=True)
         raise HTTPException(status_code=400, detail=str(e))
 
 @router.get("/logs", response_model=List[FoodAnalysis])
@@ -95,4 +120,4 @@ async def get_food_log(log_id: int, db: Session = Depends(get_db)):
             "minerals": parse_nutrient_string(log.micronutrients["minerals"])
         },
         timestamp=log.created_at
-    ) 
+    )
