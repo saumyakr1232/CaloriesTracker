@@ -3,13 +3,41 @@ from langchain_openai import ChatOpenAI
 from langchain.prompts import ChatPromptTemplate
 from langchain.output_parsers import ResponseSchema, StructuredOutputParser
 from fastapi import HTTPException
+import re
+from typing import Dict
+from pprint import pprint
 
 logger = logging.getLogger(__name__)
+
+def clean_number(value: str | int | float) -> float:
+    """Remove units and convert string to float."""
+    if not isinstance(value, str):
+        return value
+    
+    # Remove any non-numeric characters except dots and commas
+    number_str = re.sub(r'[^0-9.,]', '', value)
+    # Replace comma with dot for proper float conversion
+    number_str = number_str.replace(',', '.')
+    return float(number_str)
+
+def parse_nutrient_string(nutrient_str: str) -> Dict[str, str]:
+    """Convert nutrient string into dictionary format"""
+    if isinstance(nutrient_str, dict):
+        return nutrient_str
+    
+    result = {}
+    # Split by comma and clean up each entry
+    pairs = [pair.strip() for pair in nutrient_str.split(',')]
+    for pair in pairs:
+        if ':' in pair:
+            key, value = pair.split(':', 1)
+            result[key.strip()] = value.strip()
+    return result
 
 class FoodAnalyzerService:
     def __init__(self):
         self.llm = ChatOpenAI(
-            model_name="gpt-3.5-turbo",
+            model_name="gpt-4o-mini",
             temperature=0.7,
         )
         
@@ -17,7 +45,7 @@ class FoodAnalyzerService:
             ResponseSchema(name="description", description="A cleaned up description of the food"),
             ResponseSchema(name="calories", description="Estimated total calories as a number"),
             ResponseSchema(name="macronutrients", description="Macronutrients breakdown in grams"),
-            ResponseSchema(name="micronutrients", description="Key micronutrients and their amounts"),
+            ResponseSchema(name="micronutrients", description="Key micronutrients like Vitamins and Minerals and their amounts", type="dict"),
         ]
         
         self.output_parser = StructuredOutputParser.from_response_schemas(self.response_schemas)
@@ -27,15 +55,21 @@ class FoodAnalyzerService:
 
             Analyze the following food description and provide:
             1. A cleaned up description
-            2. Estimated total calories
-            3. Macronutrients breakdown:
-               - Protein (g)
-               - Carbohydrates (g)
-               - Fat (g)
-               - Fiber (g)
+            2. Estimated total calories as a number
+            3. Macronutrients breakdown in grams:
+               - Protein
+               - Carbohydrates
+               - Fat
+               - Fiber
             4. Key micronutrients (with amounts in mg or mcg):
-               - Vitamins (A, B, C, D, etc.)
-               - Minerals (Iron, Calcium, etc.)
+               - Vitamins 
+                 - Vitamin A
+                 - Vitamin B
+                 - etc
+               - Minerals 
+                 - Iron
+                 - Calcium
+                 - etc
 
             Food description: {food_description}
 
@@ -56,11 +90,33 @@ class FoodAnalyzerService:
             response = await self.llm.ainvoke(prompt)
             logger.debug(f"Raw LLM response: {response}")
             
-            result = self.output_parser.parse(response.content)
+            raw_result = self.output_parser.parse(response.content)
             logger.info("Successfully parsed LLM response")
-            logger.debug(f"Parsed result: {result}")
+            logger.debug(f"Parsed result: {raw_result}")
+
+            print('********************')
+            pprint(raw_result)
             
-            return result
+            print('********************')
+            
+            # Clean and structure the response
+            cleaned_result = {
+                "description": raw_result["description"],
+                "calories": clean_number(raw_result["calories"]),
+                "macronutrients": {
+                    "protein": clean_number(raw_result["macronutrients"]["Protein"]),
+                    "carbohydrates": clean_number(raw_result["macronutrients"]["Carbohydrates"]),
+                    "fat": clean_number(raw_result["macronutrients"]["Fat"]),
+                    "fiber": clean_number(raw_result["macronutrients"]["Fiber"])
+                },
+                "micronutrients": {
+                    "vitamins": parse_nutrient_string(raw_result["micronutrients"]["Vitamins"]),
+                    "minerals": parse_nutrient_string(raw_result["micronutrients"]["Minerals"])
+                }
+            }
+            
+            logger.debug(f"Cleaned result: {cleaned_result}")
+            return cleaned_result
         except Exception as e:
             logger.error(f"Error analyzing food description: {str(e)}", exc_info=True)
             raise HTTPException(status_code=500, detail=f"Error analyzing food description: {str(e)}") 

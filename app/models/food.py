@@ -1,13 +1,27 @@
 from pydantic import BaseModel
-from typing import Optional, Dict
+from typing import Dict, Optional
+from datetime import datetime
+
+class Macronutrients(BaseModel):
+    protein: float
+    carbohydrates: float
+    fat: float
+    fiber: float
+
+class Micronutrients(BaseModel):
+    vitamins: Dict[str, str]
+    minerals: Dict[str, str]
 
 class FoodEntry(BaseModel):
     description: str
-    calories: Optional[float] = None
-    timestamp: Optional[str] = None
-    macronutrients: Optional[Dict[str, float]] = None
-    micronutrients: Optional[Dict[str, str]] = None
+
+class FoodAnalysis(BaseModel):
+    description: str
+    calories: float
+    macronutrients: Macronutrients
+    micronutrients: Micronutrients
+    timestamp: Optional[datetime] = None
 
 class FoodResponse(BaseModel):
     message: str
-    entry: FoodEntry 
+    entry: FoodAnalysis 

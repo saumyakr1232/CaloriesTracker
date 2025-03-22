@@ -41,3 +41,4 @@ app.log
 # OS
 .DS_Store
 Thumbs.db 
+*.db
