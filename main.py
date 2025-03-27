@@ -4,6 +4,7 @@ from app.api.routes import router
 import langchain
 from app.database import engine
 from app.models import database_models
+from app.docs import custom_openapi
 
 # Create database tables
 database_models.Base.metadata.create_all(bind=engine)
@@ -24,6 +25,9 @@ app.add_middleware(
 
 # Include routes
 app.include_router(router, prefix="/api")
+
+# Use custom OpenAPI documentation
+app.openapi = lambda: custom_openapi(app)
 
 @app.get("/")
 async def root():

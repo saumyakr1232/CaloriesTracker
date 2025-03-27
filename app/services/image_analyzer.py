@@ -1,13 +1,19 @@
 import logging
 import base64
-from langchain_openai import ChatOpenAI
-from langchain.prompts import ChatPromptTemplate
+import json
+from openai import OpenAI
 from langchain.output_parsers import ResponseSchema, StructuredOutputParser
 from fastapi import HTTPException
 from typing import Dict, Any
 
 from .food_analyzer import clean_number, parse_nutrient_string
+from .food_analyzer import FoodAnalyzerService
 
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 logger = logging.getLogger(__name__)
 
 def encode_image(image_bytes):
@@ -16,98 +22,81 @@ def encode_image(image_bytes):
 
 class ImageAnalyzerService:
     def __init__(self):
-        self.vision_model = ChatOpenAI(
-            model_name="gpt-4o-mini",  # Using a model with vision capabilities
-            temperature=0.7,
-        )
+        # Initialize the OpenAI client directly
+        self.client = OpenAI()
+        self.food_analyzer = FoodAnalyzerService()
         
-        self.response_schemas = [
-            ResponseSchema(name="description", description="A detailed description of the food in the image"),
-            ResponseSchema(name="calories", description="Estimated total calories as a number"),
-            ResponseSchema(name="macronutrients", description="Macronutrients breakdown in grams"),
-            ResponseSchema(name="micronutrients", description="Key micronutrients like Vitamins and Minerals and their amounts", type="dict"),
-        ]
+        # self.response_schemas = [
+        #     ResponseSchema(name="description", description="A detailed description of the food in the image"),
+        #     ResponseSchema(name="calories", description="Estimated total calories as a number"),
+        #     ResponseSchema(name="macronutrients", description="Macronutrients breakdown in grams"),
+        #     ResponseSchema(name="micronutrients", description="Key micronutrients like Vitamins and Minerals and their amounts", type="dict"),
+        # ]
         
-        self.output_parser = StructuredOutputParser.from_response_schemas(self.response_schemas)
+        # self.output_parser = StructuredOutputParser.from_response_schemas(self.response_schemas)
         
-        # Modified to use a simpler prompt template
+        # System prompt for the vision model
         self.system_prompt = """
-        You are a nutritionist expert that analyzes food images and provides detailed nutritional information.
-        
-        Analyze the food in the image and provide:
-        1. A detailed description of the food
-        2. Estimated total calories as a number
-        3. Macronutrients breakdown in grams:
-           - Protein
-           - Carbohydrates
-           - Fat
-           - Fiber
-        4. Key micronutrients (with amounts in mg or mcg):
-           - Vitamins 
-             - Vitamin A
-             - Vitamin B
-             - etc
-           - Minerals 
-             - Iron
-             - Calcium
-             - etc
-             
-        {format_instructions}
+        Analyzes food images and provides detailed contents of the plate.
         """
 
     async def analyze_image(self, image_bytes: bytes) -> Dict[str, Any]:
-        """
-        Analyze an image of food and extract nutritional information
-        
-        Args:
-            image_bytes: Raw bytes of the uploaded image
-            
-        Returns:
-            Dictionary containing food description and nutritional information
-        """
         try:
-            logger.info("Analyzing food image")
+            logger.info("Starting image analysis process")
             
             # Encode the image to base64
             base64_image = encode_image(image_bytes)
+            logger.debug("Image successfully encoded to base64")
             
             # Format instructions for the output parser
-            format_instructions = self.output_parser.get_format_instructions()
+            # format_instructions = self.output_parser.get_format_instructions()
+            format_instructions = "Give response in plain text output without any formatting, don't use markdown"
+            logger.info(f"Format instructions: {format_instructions}")
             
-            # Create messages directly instead of using the template
+            # Create the messages for the OpenAI API
             messages = [
-                {"role": "system", "content": self.system_prompt.format(format_instructions=format_instructions)},
-                {"role": "user", "content": [
-                    {"type": "text", "text": "Analyze this food image"},
-                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}}
-                ]}
+                {
+                    "role": "system",
+                    "content": f"{self.system_prompt}\n\n{format_instructions}"
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": "Analyze this food image and provide nutritional information."
+                        },
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:image/jpeg;base64,{base64_image}"
+                            }
+                        }
+                    ]
+                }
             ]
             
-            logger.debug("Sending image to vision model")
-            # Use the client directly with the properly formatted messages
-            response = await self.vision_model.agenerate([messages])
-            response_message = response.generations[0][0].text
-            logger.debug("Raw vision model response received")
+            logger.info("Sending request to OpenAI vision model")
+            logger.debug(f"Request messages structure: {json.dumps(messages, indent=2)}")
             
-            raw_result = self.output_parser.parse(response_message)
-            logger.info("Successfully parsed vision model response")
+            logger.info("Sending image to vision model")
             
-            # Clean and structure the response
-            cleaned_result = {
-                "description": raw_result["description"],
-                "calories": clean_number(raw_result["calories"]),
-                "macronutrients": {
-                    "protein": clean_number(raw_result["macronutrients"]["Protein"]),
-                    "carbohydrates": clean_number(raw_result["macronutrients"]["Carbohydrates"]),
-                    "fat": clean_number(raw_result["macronutrients"]["Fat"]),
-                    "fiber": clean_number(raw_result["macronutrients"]["Fiber"])
-                },
-                "micronutrients": {
-                    "vitamins": parse_nutrient_string(raw_result["micronutrients"]["Vitamins"]),
-                    "minerals": parse_nutrient_string(raw_result["micronutrients"]["Minerals"])
-                }
-            }
+            # Call the OpenAI API directly
+            response = self.client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=messages,
+                temperature=0.7,
+                max_tokens=1000
+            )
             
+            # Extract the response content
+            response_content = response.choices[0].message.content
+            logger.info(f"Raw vision model response: {response_content}")
+
+            
+            # Parse the response content using food analyzer
+            cleaned_result = await self.food_analyzer.analyze_food(response_content)
+                        
             logger.debug(f"Cleaned result: {cleaned_result}")
             return cleaned_result
             
